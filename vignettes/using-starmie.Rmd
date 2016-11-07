@@ -1,0 +1,255 @@
+---
+title: "starmie: Basic Usage"
+author: "Stuart Lee, Gerry Tonkin-Hill"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 4
+    keep_md: true
+vignette: >
+  %\VignetteIndexEntry{starmie Basic Usage}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(tidy = TRUE, 
+                      fig.align = 'center', fig.width = 8, fig.height = 6)
+```
+# Starmie: making population structure analyses easier 
+
+A very common part of modern population genetics analysis is inferring
+underlying population structure from genetic markers such as single
+nucleotide polymorphisms (SNPs) or microsatellites. The two main methods
+for this task are the Bayesian STRUCTURE algorithm or the frequentist
+ADMIXTURE. We have found that processing the output of these programs and
+performing meaningful inference and visualization of the results is far more
+difficult than it should be. This is why we wrote starmie. 
+
+Some key features:
+
+  * Parse output from STRUCTURE or ADMXITURE into a usable data structure in R.
+  * Plot model diagnostics to perform inference on choice of 'K'.
+  * Create the 'standard' STRUCTURE bar plot showing cluster memberships.
+  * Plot model checks such as MCMC chains on the admixture coefficient $\alpha$
+    and the log-likelihood.
+  * Visualizing output from STRUCTURE analysis
+
+This vignette outlines how to use starmie to do basic tasks after running 
+STRUCTURE at the command line.
+
+## A basic STRUCTURE pipeline in R.
+
+To use all the options in starmie for STRUCTURE output, we require 
+for each run the 'out_f' file produced by the program and the logging information
+so we can produce MCMC diagnostics. To get the latter the output of STRUCTURE
+must be redirected to a file. Below we present an example of running STRUCTURE
+in multiple runs for each K in parallel. We assume that the `mainparams` and
+`extraparams`  files are correctly specified and that the user has access to the
+path of the STRUCTURE binary. Also make sure RANDOMIZE option is turned off,
+so independent seeds can be set in each run.
+
+```{r parallel-structure, eval=FALSE}
+input_file <- system.file("inst/extdata/microsat_testfiles", "locprior.str", package = "starmie")
+main_params <- system.file("inst/extdata/microsat_testfiles", "mainparams", package = "starmie")
+extra_params <-  system.file("inst/extdata/microsat_testfiles", "extraparams", package = "starmie")
+runStructure("path/to/structure", input_file, main_params, extra_params, "run", 5, 2, 2)
+
+```
+
+
+## Parsing STRUCTURE files, the 'struct' object
+
+The basic unit of analysis for `starmie` is the `struct` object, which contains
+the model information in the STRUCTURE out_f file and optionally the logging
+information for the MCMC diagnostics. As an example, we have run STRUCTURE
+on [simulated microsatellite data](http://pritchardlab.stanford.edu/software/example-data/locprior.str) 
+from the STRUCTURE example data and save the out_f. To create a `struct` object
+from a run we use the following:
+```{r struct-example}
+library(starmie)
+# path to file name
+k6_file <- system.file("extdata/microsat_testfiles/", "locprior_K6.out_f", 
+                       package = "starmie")
+# create struct object
+k6_msat <- loadStructure(k6_file)
+
+k6_msat
+```
+
+The STRUCTURE object contains the following information about a single run:
+```{r struct-object, echo=FALSE}
+list_names <- names(k6_msat)
+list_description <- c("K parameter supplied to STRUCTURE",
+                      "Input parameters",
+                      "Assigned cluster membership proportions",
+                      "Pairwise Fst values between inferred clusters",
+                      "Average nucleotide distance within clusters",
+                      "Within cluster average Fst values",
+                      "Model fit diagnositcs", 
+                      "Individual ancestral probability of membership to cluster",
+                      "Estimated ancestral allele frequencies for each cluster",
+                      "MCMC burn-in diagnositcs",
+                      "MCMC post burn-in diagnostics")
+
+knitr::kable(data.frame(attributes = list_names, 
+                        description = list_description))
+```
+
+Of most interest to users would be the `ancest_df` which is the Q-matrix of individual
+cluster membership probabilities. To extract that information for inspection 
+use the helper function `getQ`.
+
+```{r qhat}
+Q_hat <- getQ(k6_msat)
+```
+
+## Why you're here: the infamous bar plot...
+
+To make the bar-plot simply type:
+
+```{r plot-bar}
+plotBar(k6_msat, facet = FALSE)
+```
+
+This will group the known sample labels into population labels if they were 
+supplied to the STRUCTURE run.
+Alternatively, you can facet the inferred cluster labels to make it easier to see 
+outliers and geographical groupings.
+
+```{r plot-bar2}
+plotBar(k6_msat)
+```
+
+If you have not given population labels to your samples you can also add them 
+using the `populations` argument.
+
+
+## Loading multiple 'struct' objects the 'structList'
+
+The `structList` is a container for manipulating multiple `struct` objects.
+Some potential use-cases are:
+
+* load multiple $K$ values from different runs and perform model comparisons.
+* pool a sequence of runs over the same value of $K$ and perform CLUMPPing
+
+On our example microsatellite data to add the second run for 
+the results of running STRUCTURE $K$ = 6 ,we first load the output file, and
+then pass both `struct` objects to the `structList` function.
+```{r structList}
+k6_file_run2 <- system.file("extdata/microsat_testfiles/", 
+                            "run2_locprior_K6.out_f", 
+                       package = "starmie")
+
+k6_run2 <- loadStructure(k6_file_run2)
+
+k6_all <- structList(k6_msat, k6_run2)
+
+k6_all
+```
+
+We can also compare the cluster labeling by using `plotMultiK` (and see
+that label-switching over different MCMC runs is a problem!)
+
+```{r plot-multiK}
+plotMultiK(k6_all)
+```
+
+
+## Diagnostics: or checking out your chains
+
+A very simple approach to determining whether you need to rerun a STRUCTURE a model
+is to plot the estimated log-likelihood over each iteration over the post burn-in MCMC
+phase. If the chains have converged the log-likelihood should stabilize towards the final
+iterations and the variance within a run should be relatively low. The `plotMCMC`
+can plot the log-likelihood or admixture coefficient against the iteration over different
+runs and different $K$ values. Note this requires the logging file to be read by `loadStructure`. 
+
+Here we show an example when $K$ = 10 and the number of runs is also 10.
+```{r mcmc1}
+multiple_runs_k10 <- exampleStructure("mcmc_diagnostics")
+
+mcmc_out <-plotMCMC(multiple_runs_k10, facet = FALSE)
+
+head(mcmc_out$mcmc_info)
+```
+
+## Inference on K is hard
+
+Usually you would run STRUCTURE multiple times for multiple values of $K$ and
+then use estimates of the log-likelihood to determine the 'best' choice of
+$K$ that explains the population structure in your data. There are two choices
+for model selection - either use the maximum mean log-posterior probability
+estimated by STRUCTURE or use the Evanno method. The `bestK` function returns the
+value of $K$ that is estimated by these methods and also produces diagnostic plots.
+
+```{r evanno-lyf}
+multi_K <- exampleStructure("multiple_runs")
+bestK(multi_K)
+bestK(multi_K, "structure")
+```
+
+## CLUMPPING together - avoiding label switching
+
+We have written R implementations of the popular CLUMMP and CLUMPAK algorithms for
+combining Q-matrices over different runs of STRUCTURE. Usually, this step is performed
+after choosing a value for $K$, when the analyst would like to refine their estimates
+of cluster memberships. To perform CLUMPPING create a `structList` consisting of the
+same value of $K$ for multiple runs. In each case the Q-matrices and a matrix of
+column permutations for each run are returned.
+
+We return to the example of our two runs of $K$ = 6, stored in `k6_all` defined
+above. 
+
+```{r clump-example}
+Q_list <- lapply(k6_all, getQ)
+clumpak_results <- clumpak(Q_list)
+
+clumppy <- clumpp(Q_list, method = "greedy")
+
+# plot the results
+plotMultiK(clumppy$Q_list)
+```
+
+Several other algorithms to correct label switching are available, including
+fast implementations for large values of K. 
+
+## Other visualisations
+
+As the STRUCTURE model outputs other information, we have implemented some
+multidimensional scaling plots to visualize some of the neglected features
+of the STRUCTURE model. 
+
+For example, we can plot the net nucleotide distance between clusters:
+```{r plotMDS}
+plotMDS(k6_msat)
+```
+
+
+# Bugs, feature requests and miscellana
+Please submit any bugs or feature requests as an issue to https://github.com/sa-lee/starmie/issues
+
+
+
+# References
+
+Kopelman, N. M., Mayzel, J., Jakobsson, M., Rosenberg, N. A. & Mayrose, I. Clumpak: a program for identifying clustering modes and packaging population structure inferences across K. Mol. Ecol. Resour. 15, 1179–1191 (2015).
+
+Stephens, M. Dealing with label switching in mixture models. J. R. Stat. Soc. Series B Stat. Methodol. 62, 795–809 (2000).
+
+Jakobsson, M. & Rosenberg, N. A. CLUMPP: a cluster matching and permutation program for dealing with label switching and multimodality in analysis of population structure. Bioinformatics 23, 1801–1806 (2007).
+
+Hubisz, M. J., Falush, D., Stephens, M. & Pritchard, J. K. Inferring weak population structure with the assistance of sample group information. Mol. Ecol. Resour. 9, 1322–1332 (2009).
+
+Falush, D., Stephens, M. & Pritchard, J. K. Inference of population structure using multilocus genotype data: dominant markers and null alleles. Mol. Ecol. Notes 7, 574–578 (2007).
+
+Falush, D., Stephens, M. & Pritchard, J. K. Inference of population structure using multilocus genotype data: linked loci and correlated allele frequencies. Genetics 164, 1567–1587 (2003).
+
+Pritchard, J. K., Stephens, M. & Donnelly, P. Inference of population structure using multilocus genotype data. Genetics 155, 945–959 (2000).
+
+Verity, R. & Nichols, R. A. Estimating the Number of Subpopulations (K) in Structured Populations. Genetics (2016).
+
+# Appendix
+```{r session-info}
+sessionInfo()
+```
